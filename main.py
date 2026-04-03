@@ -3,20 +3,41 @@ import requests
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-
 import sqlite3
 
-# Cargamos las variables de entorno
+# Importem Flask i Thread per crear el servidor web fals
+from flask import Flask
+from threading import Thread
+
+# Carreguem les variables d'entorn
 load_dotenv()
 TOKEN_TELEGRAM = os.getenv("TELEGRAM_TOKEN")
-MI_CHAT_ID = os.getenv("MI_CHAT_ID") # ¡Recuperamos tu ID de la caja fuerte!
+MI_CHAT_ID = os.getenv("MI_CHAT_ID") # Recuperem el teu ID de la caixa forta!
+
+# --- INICI DEL SERVIDOR WEB PER RENDER ---
+app_web = Flask(__name__)
+
+# Aquesta funció respondrà a les visites externes per evitar que Render s'apagui
+@app_web.route('/')
+def home():
+    return "El bot de Sofascore està actiu i funcionant 24/7!"
+
+# Funció per arrencar el servidor web en un port específic
+def run():
+    app_web.run(host='0.0.0.0', port=8080)
+
+# Funció que crea un fil (thread) separat perquè el web no bloquegi el bot
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
+# --- FI DEL SERVIDOR WEB ---
 
 def inicializar_bd():
-    # Esto crea un archivo llamado 'apuestas.db' en tu carpeta
+    # Això crea un fitxer anomenat 'apuestas.db' a la teva carpeta
     conexion = sqlite3.connect("apuestas.db")
     cursor = conexion.cursor()
     
-    # Creamos una tabla para guardar los IDs si no existe ya
+    # Creem una taula per guardar els IDs si no existeix
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS enviadas (
             id_partido INTEGER PRIMARY KEY
@@ -25,7 +46,7 @@ def inicializar_bd():
     conexion.commit()
     conexion.close()
 
-# Llamamos a la función nada más arrancar el código
+# Cridem la funció només arrencar el codi
 inicializar_bd()
 
 async def comando_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -34,7 +55,7 @@ async def comando_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(mensaje_bienvenida)
 
 async def comando_activas(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # (Mantenemos tu código anterior intacto para cuando quieras consultar manualmente)
+    # Mantenim el teu codi anterior intacte per quan vulguis consultar manualment
     await update.message.reply_text("🔎 Buscando apuestas activas en Sofascore...")
     url = "https://www.sofascore.com/api/v1/user-account/678767edb8435cc2d1bba515/predictions/next/0"
     cabeceras = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
@@ -59,11 +80,8 @@ async def comando_activas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Error interno: {e}")
 
-# NUEVO: Función automática que se ejecutará en segundo plano
 async def revisar_apuestas_automaticamente(context: ContextTypes.DEFAULT_TYPE):
-    # Como esta función se ejecuta sola, no usamos print() ni reply_text() para avisar que está buscando, 
-    # simplemente lo hace en silencio.
-    
+    # Com que aquesta funció s'executa sola, ho fa en silenci
     url = "https://www.sofascore.com/api/v1/user-account/678767edb8435cc2d1bba515/predictions/next/0"
     cabeceras = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
     
@@ -73,18 +91,18 @@ async def revisar_apuestas_automaticamente(context: ContextTypes.DEFAULT_TYPE):
             datos = respuesta.json()
             predicciones = datos.get("predictions", [])
             
-            nuevas_apuestas = [] # Lista para guardar solo las que no hemos visto antes
+            nuevas_apuestas = [] # Llista per guardar només les que no hem vist abans
             
             conexion = sqlite3.connect("apuestas.db")
             cursor = conexion.cursor()
             
             for apuesta in predicciones:
-                id_unico = apuesta["eventId"] # Usamos el ID del partido como identificador
+                id_unico = apuesta["eventId"] # Utilitzem l'ID del partit com a identificador
                 
                 cursor.execute("SELECT id_partido FROM enviadas WHERE id_partido = ?", (id_unico,))
                 resultado = cursor.fetchone()
                 
-                # Si este ID no está en nuestra memoria, es una alerta NUEVA
+                # Si aquest ID no està a la nostra memòria, és una alerta NOVA
                 if resultado is None:
                     nuevas_apuestas.append(apuesta)
                     
@@ -93,7 +111,7 @@ async def revisar_apuestas_automaticamente(context: ContextTypes.DEFAULT_TYPE):
                     
             conexion.close()
             
-            # Si hemos encontrado apuestas nuevas, construimos el mensaje y te lo enviamos directamente
+            # Si hem trobat apostes noves, construïm el missatge i te l'enviem
             if nuevas_apuestas:
                 mensaje_final = f"🚨 *¡NUEVAS APUESTAS DETECTADAS!* ({len(nuevas_apuestas)})\n\n"
                 for apuesta in nuevas_apuestas:
@@ -102,24 +120,25 @@ async def revisar_apuestas_automaticamente(context: ContextTypes.DEFAULT_TYPE):
                         f"🎯 Pronóstico: {apuesta['vote']} | 📈 Cuota: {apuesta['odds']['decimalValue']}\n"
                         f"〰️〰️〰️〰️〰️〰️〰️〰️\n"
                     )
-                # Fíjate que aquí usamos context.bot.send_message porque no estamos respondiendo a nadie, 
-                # estamos iniciando la conversación usando tu MI_CHAT_ID
+                # Iniciem la conversa utilitzant el teu MI_CHAT_ID
                 await context.bot.send_message(chat_id=MI_CHAT_ID, text=mensaje_final, parse_mode="Markdown")
                 
     except Exception as e:
-        # En tareas de fondo, los errores se suelen imprimir en la consola (o en un log)
+        # En tasques de fons, els errors s'imprimeixen a la consola
         print(f"Error en revisión automática: {e}")
 
 if __name__ == '__main__':
+    # 1. Primer, encenem el servidor fals en segon pla perquè Render estigui content
+    keep_alive()
+
+    # 2. Configurem i engeguem el bot
     app = Application.builder().token(TOKEN_TELEGRAM).build()
 
     app.add_handler(CommandHandler("start", comando_start))
     app.add_handler(CommandHandler("activas", comando_activas)) 
 
-    # NUEVO: Configuramos el reloj interno (JobQueue)
-    # first=5 significa que hará la primera comprobación 5 segundos después de encender el bot
-    # interval=300 significa que luego lo repetirá cada 5 minutos (300 segundos)
+    # Configurem el rellotge intern per repetir cada 5 minuts (300 segons)
     app.job_queue.run_repeating(revisar_apuestas_automaticamente, interval=300, first=5)
 
-    print("Iniciando el bot automático... Pulsa Ctrl+C para detenerlo.")
+    print("Iniciant el bot automàtic... Prem Ctrl+C per aturar-lo.")
     app.run_polling()
