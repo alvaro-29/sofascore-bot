@@ -62,6 +62,7 @@ async def comando_activas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         respuesta = requests.get(url, headers=cabeceras)
+        print(f"DEBUG: Código de respuesta: {respuesta.status_code}")
         if respuesta.status_code == 200:
             datos = respuesta.json()
             predicciones = datos.get("predictions", [])
