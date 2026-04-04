@@ -1,4 +1,5 @@
 import os
+import httpx
 import requests
 from dotenv import load_dotenv
 from telegram import Update
@@ -49,86 +50,77 @@ def inicializar_bd():
 # Cridem la funció només arrencar el codi
 inicializar_bd()
 
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+    "Origin": "https://www.sofascore.com",
+    "Referer": "https://www.sofascore.com/",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-site"
+}
+
 async def comando_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     usuario = update.effective_user.first_name
     mensaje_bienvenida = f"¡Hola, {usuario}! Soy tu bot de alertas de Sofascore. Estoy activo y preparado. 🤖⚽"
     await update.message.reply_text(mensaje_bienvenida)
 
 async def comando_activas(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Mantenim el teu codi anterior intacte per quan vulguis consultar manualment
-    await update.message.reply_text("🔎 Buscando apuestas activas en Sofascore...")
+    await update.message.reply_text("🔎 Buscando apuestas en Sofascore con nuevo disfraz...")
     url = "https://www.sofascore.com/api/v1/user-account/678767edb8435cc2d1bba515/predictions/next/0"
-    cabeceras = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
     
-    try:
-        respuesta = requests.get(url, headers=cabeceras)
-        await update.message.reply_text(f"DEBUG: Código de respuesta: {respuesta.status_code}")
-        print(f"DEBUG: Código de respuesta: {respuesta.status_code}")
-        if respuesta.status_code == 200:
-            datos = respuesta.json()
-            predicciones = datos.get("predictions", [])
+    async with httpx.AsyncClient(http2=True) as client:
+        try:
+            # Fem la petició amb el nou format
+            respuesta = await client.get(url, headers=HEADERS, timeout=15.0)
             
-            if predicciones:
-                mensaje_final = f"📋 *He encontrado {len(predicciones)} apuestas activas:*\n\n"
-                for apuesta in predicciones:
-                    mensaje_final += (
-                        f"⚽ *{apuesta['homeTeamName']} vs {apuesta['awayTeamName']}*\n"
-                        f"🎯 Pronóstico: {apuesta['vote']} | 📈 Cuota: {apuesta['odds']['decimalValue']}\n"
-                        f"〰️〰️〰️〰️〰️〰️〰️〰️\n"
-                    )
-                await update.message.reply_text(mensaje_final, parse_mode="Markdown")
+            if respuesta.status_code == 200:
+                datos = respuesta.json()
+                predicciones = datos.get("predictions", [])
+                
+                if predicciones:
+                    msg = f"📋 *He encontrado {len(predicciones)} apuestas:*\n\n"
+                    for ap in predicciones:
+                        msg += f"⚽ *{ap['homeTeamName']} vs {ap['awayTeamName']}*\n🎯 {ap['vote']} | 📈 {ap['odds']['decimalValue']}\n\n"
+                    await update.message.reply_text(msg, parse_mode="Markdown")
+                else:
+                    await update.message.reply_text("No hay apuestas ahora mismo. 🎈")
             else:
-                await update.message.reply_text("No hay apuestas activas en este momento. 🎈")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error interno: {e}")
+                await update.message.reply_text(f"⚠️ Error {respuesta.status_code}. Sofascore sigue bloqueando el acceso.")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error de conexión: {e}")
 
-async def revisar_apuestas_automaticamente(context: ContextTypes.DEFAULT_TYPE):
-    # Com que aquesta funció s'executa sola, ho fa en silenci
+async def revisar_automaticamente(context: ContextTypes.DEFAULT_TYPE):
     url = "https://www.sofascore.com/api/v1/user-account/678767edb8435cc2d1bba515/predictions/next/0"
-    cabeceras = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
-    
-    try:
-        respuesta = requests.get(url, headers=cabeceras)
-        if respuesta.status_code == 200:
-            datos = respuesta.json()
-            predicciones = datos.get("predictions", [])
-            
-            nuevas_apuestas = [] # Llista per guardar només les que no hem vist abans
-            
-            conexion = sqlite3.connect("apuestas.db")
-            cursor = conexion.cursor()
-            
-            for apuesta in predicciones:
-                id_unico = apuesta["eventId"] # Utilitzem l'ID del partit com a identificador
+    async with httpx.AsyncClient(http2=True) as client:
+        try:
+            res = await client.get(url, headers=HEADERS, timeout=15.0)
+            if res.status_code == 200:
+                predicciones = res.json().get("predictions", [])
+                conexion = sqlite3.connect("apuestas.db")
+                cursor = conexion.cursor()
+                cursor.execute('CREATE TABLE IF NOT EXISTS enviadas (id_partido INTEGER PRIMARY KEY)')
                 
-                cursor.execute("SELECT id_partido FROM enviadas WHERE id_partido = ?", (id_unico,))
-                resultado = cursor.fetchone()
+                nuevas = []
+                for ap in predicciones:
+                    id_p = ap["eventId"]
+                    cursor.execute("SELECT id_partido FROM enviadas WHERE id_partido = ?", (id_p,))
+                    if cursor.fetchone() is None:
+                        nuevas.append(ap)
+                        cursor.execute("INSERT INTO enviadas (id_partido) VALUES (?)", (id_p,))
                 
-                # Si aquest ID no està a la nostra memòria, és una alerta NOVA
-                if resultado is None:
-                    nuevas_apuestas.append(apuesta)
-                    
-                    cursor.execute("INSERT INTO enviadas (id_partido) VALUES (?)", (id_unico,))
-                    conexion.commit() # Confirmem que volem guardar els canvis
-                    
-            conexion.close()
-            
-            # Si hem trobat apostes noves, construïm el missatge i te l'enviem
-            if nuevas_apuestas:
-                mensaje_final = f"🚨 *¡NUEVAS APUESTAS DETECTADAS!* ({len(nuevas_apuestas)})\n\n"
-                for apuesta in nuevas_apuestas:
-                    mensaje_final += (
-                        f"⚽ *{apuesta['homeTeamName']} vs {apuesta['awayTeamName']}*\n"
-                        f"🎯 Pronóstico: {apuesta['vote']} | 📈 Cuota: {apuesta['odds']['decimalValue']}\n"
-                        f"〰️〰️〰️〰️〰️〰️〰️〰️\n"
-                    )
-                # Iniciem la conversa utilitzant el teu MI_CHAT_ID
-                await context.bot.send_message(chat_id=MI_CHAT_ID, text=mensaje_final, parse_mode="Markdown")
-                
-    except Exception as e:
-        # En tasques de fons, els errors s'imprimeixen a la consola
-        print(f"Error en revisión automática: {e}")
+                conexion.commit()
+                conexion.close()
 
+                if nuevas:
+                    msg = f"🚨 *¡NUEVAS APUESTAS!*\n\n"
+                    for ap in nuevas:
+                        msg += f"⚽ *{ap['homeTeamName']} vs {ap['awayTeamName']}*\n🎯 {ap['vote']} | 📈 {ap['odds']['decimalValue']}\n\n"
+                    await context.bot.send_message(chat_id=MI_CHAT_ID, text=msg, parse_mode="Markdown")
+        except Exception as e:
+            print(f"Error automàtic: {e}")
+            
 if __name__ == '__main__':
     # 1. Primer, encenem el servidor fals en segon pla perquè Render estigui content
     keep_alive()
@@ -140,7 +132,7 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("activas", comando_activas)) 
 
     # Configurem el rellotge intern per repetir cada 5 minuts (300 segons)
-    app.job_queue.run_repeating(revisar_apuestas_automaticamente, interval=300, first=5)
+    app.job_queue.run_repeating(revisar_automaticamente, interval=300, first=5)
 
     print("Iniciant el bot automàtic... Prem Ctrl+C per aturar-lo.")
     app.run_polling()
